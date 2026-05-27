@@ -22,7 +22,7 @@ enum SettingsWindowBridge {
     static func open() {
         NSApp.activate(ignoringOtherApps: true)
 
-        if let window = existingSettingsWindow {
+        if let window = anchorWindow {
             window.makeKeyAndOrderFront(nil)
             return
         }
@@ -30,7 +30,8 @@ enum SettingsWindowBridge {
         openHandler?()
     }
 
-    private static var existingSettingsWindow: NSWindow? {
+    /// 可作为 Sheet 弹窗附着的窗口（设置窗优先）
+    static var anchorWindow: NSWindow? {
         NSApp.windows.first { window in
             guard window.canBecomeMain, !window.isKind(of: NSPanel.self) else { return false }
             if window.identifier?.rawValue == windowID { return true }

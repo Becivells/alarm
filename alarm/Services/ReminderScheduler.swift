@@ -195,12 +195,19 @@ final class ReminderScheduler {
 
         if settings.alertFlash {
             flashController?.flash()
+            await Task.yield()
         }
-        if settings.alertSpeech {
-            await speak()
-        }
+
+        let speechTask: Task<Void, Never>? = settings.alertSpeech
+            ? Task { await speak() }
+            : nil
+
         if settings.alertPopup {
-            showPopup()
+            await showPopupAsync()
+        }
+
+        if let speechTask {
+            await speechTask.value
         }
 
         reschedule(from: Date())
@@ -252,7 +259,7 @@ final class ReminderScheduler {
         }
     }
 
-    private func showPopup() {
+    private func showPopupAsync() async {
         let alert = NSAlert()
         alert.messageText = "提醒"
         alert.informativeText = settings.speechText
@@ -260,7 +267,26 @@ final class ReminderScheduler {
         alert.addButton(withTitle: "知道了")
         alert.addButton(withTitle: "延后 5 分钟")
 
-        let response = alert.runModal()
+        var window = SettingsWindowBridge.anchorWindow
+        if window == nil {
+            SettingsWindowBridge.open()
+            for _ in 0..<20 {
+                try? await Task.sleep(for: .milliseconds(50))
+                if let found = SettingsWindowBridge.anchorWindow {
+                    window = found
+                    break
+                }
+            }
+        }
+
+        let response = await withCheckedContinuation { (continuation: CheckedContinuation<NSApplication.ModalResponse, Never>) in
+            if let window {
+                alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
+            } else {
+                continuation.resume(returning: alert.runModal())
+            }
+        }
+
         if response == .alertSecondButtonReturn {
             snooze(seconds: 5 * 60)
         }

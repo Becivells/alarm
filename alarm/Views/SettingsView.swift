@@ -61,7 +61,7 @@ struct SettingsView: View {
             Section("提醒方式") {
                 Toggle("弹窗", isOn: $scheduler.settings.alertPopup)
                 Toggle("语音", isOn: $scheduler.settings.alertSpeech)
-                Toggle("屏幕呼吸灯", isOn: $scheduler.settings.alertFlash)
+                Toggle("屏幕柔光闪烁", isOn: $scheduler.settings.alertFlash)
 
                 TextField("语音内容", text: $scheduler.settings.speechText)
             }

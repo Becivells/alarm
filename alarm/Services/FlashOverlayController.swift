@@ -12,7 +12,7 @@ enum BreathingOpacity {
         startedAt: Date,
         duration: TimeInterval,
         breathPeriod: TimeInterval = 2.2,
-        peakOpacity: Float = 0.22
+        peakOpacity: Float = 0.42
     ) -> Float {
         let elapsed = now.timeIntervalSince(startedAt)
         guard elapsed >= 0, elapsed < duration else { return 0 }
@@ -31,17 +31,37 @@ enum BreathingOpacity {
     }
 }
 
-/// 全屏单层 CALayer 呼吸灯，避免 SwiftUI 全屏离屏缓冲
-final class BreathingOverlayNSView: NSView {
-    private let tintLayer = CALayer()
+/// 屏幕内侧白色柔光圆角边框呼吸闪烁，中心不遮挡
+final class SoftRoundedFlashOverlayNSView: NSView {
+    private let glowLayer = CAShapeLayer()
+    private let borderLayer = CAShapeLayer()
+
+    private let cornerRadius: CGFloat = 28
+    private let borderWidth: CGFloat = 48
+    private let screenInset: CGFloat = 10
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
-        tintLayer.backgroundColor = NSColor.systemOrange.cgColor
-        tintLayer.opacity = 0
-        layer?.addSublayer(tintLayer)
+
+        glowLayer.fillColor = nil
+        glowLayer.strokeColor = NSColor.white.withAlphaComponent(0.55).cgColor
+        glowLayer.lineCap = .round
+        glowLayer.lineJoin = .round
+        glowLayer.shadowColor = NSColor.white.cgColor
+        glowLayer.shadowRadius = 32
+        glowLayer.shadowOffset = .zero
+        glowLayer.opacity = 0
+
+        borderLayer.fillColor = nil
+        borderLayer.strokeColor = NSColor.white.cgColor
+        borderLayer.lineCap = .round
+        borderLayer.lineJoin = .round
+        borderLayer.opacity = 0
+
+        layer?.addSublayer(glowLayer)
+        layer?.addSublayer(borderLayer)
     }
 
     @available(*, unavailable)
@@ -51,18 +71,39 @@ final class BreathingOverlayNSView: NSView {
 
     override func layout() {
         super.layout()
-        tintLayer.frame = bounds
+        glowLayer.frame = bounds
+        borderLayer.frame = bounds
+
+        let path = roundedBorderPath()
+        glowLayer.path = path
+        borderLayer.path = path
+
+        glowLayer.lineWidth = borderWidth + 28
+        borderLayer.lineWidth = borderWidth
     }
 
     func setBreathOpacity(_ opacity: Float) {
-        tintLayer.opacity = opacity
+        borderLayer.opacity = opacity
+        glowLayer.opacity = opacity * 0.7
+        glowLayer.shadowOpacity = opacity * 0.85
+    }
+
+    private func roundedBorderPath() -> CGPath {
+        let inset = borderWidth / 2 + screenInset
+        let rect = bounds.insetBy(dx: inset, dy: inset)
+        return CGPath(
+            roundedRect: rect,
+            cornerWidth: cornerRadius,
+            cornerHeight: cornerRadius,
+            transform: nil
+        )
     }
 }
 
 @MainActor
 final class FlashOverlayController {
     private var panel: NSPanel?
-    private var overlayView: BreathingOverlayNSView?
+    private var overlayView: SoftRoundedFlashOverlayNSView?
     private var startedAt: Date?
     private var duration: TimeInterval = 9
     private var scheduledTimers: [Timer] = []
@@ -87,7 +128,7 @@ final class FlashOverlayController {
         panel.ignoresMouseEvents = true
         panel.hasShadow = false
 
-        let overlay = BreathingOverlayNSView(frame: frame)
+        let overlay = SoftRoundedFlashOverlayNSView(frame: frame)
         panel.contentView = overlay
 
         self.panel = panel
