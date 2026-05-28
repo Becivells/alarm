@@ -30,12 +30,18 @@ enum SettingsWindowBridge {
         openHandler?()
     }
 
-    /// 可作为 Sheet 弹窗附着的窗口（设置窗优先）
+    /// 设置窗口（含已关闭但尚未销毁的）
     static var anchorWindow: NSWindow? {
         NSApp.windows.first { window in
             guard window.canBecomeMain, !window.isKind(of: NSPanel.self) else { return false }
             if window.identifier?.rawValue == windowID { return true }
             return window.title == "提醒设置"
         }
+    }
+
+    /// 当前正在显示、可作为 Sheet 附着的设置窗（避免为弹窗强行打开设置页）
+    static var visibleAnchorWindow: NSWindow? {
+        guard let window = anchorWindow, window.isVisible else { return nil }
+        return window
     }
 }

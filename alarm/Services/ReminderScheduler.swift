@@ -62,6 +62,8 @@ final class ReminderScheduler {
     private var fireTimer: Timer?
     private var speechSynthesizer: AVSpeechSynthesizer?
     private var speechDelegate: SpeechSynthesisDelegate?
+    private var speechStopRequested = false
+    private var speechRetryCount = 0
     private var wakeObserver: NSObjectProtocol?
 
     init() {
@@ -154,8 +156,8 @@ final class ReminderScheduler {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
         }
+        speechStopRequested = true
         speechSynthesizer?.stopSpeaking(at: .immediate)
-        speechSynthesizer = nil
         speechDelegate = nil
     }
 
@@ -198,16 +200,13 @@ final class ReminderScheduler {
             await Task.yield()
         }
 
-        let speechTask: Task<Void, Never>? = settings.alertSpeech
-            ? Task { await speak() }
-            : nil
+        // 先播完语音再弹窗，避免模态对话框抢占音频（外接音响上易截断）
+        if settings.alertSpeech {
+            await speak()
+        }
 
         if settings.alertPopup {
             await showPopupAsync()
-        }
-
-        if let speechTask {
-            await speechTask.value
         }
 
         reschedule(from: Date())
@@ -225,38 +224,101 @@ final class ReminderScheduler {
         let text = settings.speechText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
 
+        speechRetryCount = 0
+        speechStopRequested = false
+
         let synthesizer = speechSynthesizer ?? AVSpeechSynthesizer()
         speechSynthesizer = synthesizer
 
         if synthesizer.isSpeaking {
+            speechStopRequested = true
             synthesizer.stopSpeaking(at: .immediate)
+            speechStopRequested = false
         }
 
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+            ?? AVSpeechSynthesisVoice(language: "en-US")
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate
+        utterance.postUtteranceDelay = 0.12
+
         var didResume = false
+        let maxWait = max(20, Double(text.count) * 0.35 + 8)
+        let speakStarted = ContinuousClock.now
+
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             let finish: @MainActor () -> Void = { [weak self] in
                 guard !didResume else { return }
                 didResume = true
                 self?.speechDelegate = nil
-                self?.speechSynthesizer = nil
                 continuation.resume()
             }
 
-            let delegate = SpeechSynthesisDelegate { finish() }
+            let retrySpeak: @MainActor () -> Void = { [weak self] in
+                guard let self, !self.speechStopRequested, self.speechRetryCount < 1 else {
+                    finish()
+                    return
+                }
+                self.speechRetryCount += 1
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(400))
+                    guard !self.speechStopRequested else {
+                        finish()
+                        return
+                    }
+                    synthesizer.speak(utterance)
+                }
+            }
+
+            let delegate = SpeechSynthesisDelegate(
+                onComplete: { spokenText, synthesizer in
+                    Task { @MainActor [weak self] in
+                        guard let self else {
+                            finish()
+                            return
+                        }
+                        let elapsed = speakStarted.duration(to: .now)
+                        let expectedMin = max(0.65, Double(spokenText.count) * 0.1)
+                        if elapsed < .seconds(expectedMin * 0.55), !self.speechStopRequested, self.speechRetryCount < 1 {
+                            retrySpeak()
+                            return
+                        }
+                        try? await Task.sleep(for: .seconds(Self.playbackDrainDelay(for: spokenText, synthesizer: synthesizer)))
+                        finish()
+                    }
+                },
+                onCancel: { _, _ in
+                    Task { @MainActor [weak self] in
+                        guard let self else {
+                            finish()
+                            return
+                        }
+                        if self.speechStopRequested {
+                            finish()
+                            return
+                        }
+                        retrySpeak()
+                    }
+                }
+            )
             speechDelegate = delegate
             synthesizer.delegate = delegate
 
-            let utterance = AVSpeechUtterance(string: text)
-            utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
-                ?? AVSpeechSynthesisVoice(language: "en-US")
-            utterance.rate = AVSpeechUtteranceDefaultSpeechRate
             synthesizer.speak(utterance)
 
             Task { @MainActor in
-                try? await Task.sleep(for: .seconds(15))
+                try? await Task.sleep(for: .seconds(maxWait))
                 finish()
             }
         }
+    }
+
+    /// 合成结束到外接设备播完之间的缓冲（USB/HDMI 常有额外延迟）
+    private static func playbackDrainDelay(for text: String, synthesizer: AVSpeechSynthesizer) -> TimeInterval {
+        let base: TimeInterval = 0.4
+        let perChar = 0.015
+        let speakingPad = synthesizer.isSpeaking ? 0.25 : 0
+        return min(2.5, base + Double(text.count) * perChar + speakingPad)
     }
 
     private func showPopupAsync() async {
@@ -267,20 +329,8 @@ final class ReminderScheduler {
         alert.addButton(withTitle: "知道了")
         alert.addButton(withTitle: "延后 5 分钟")
 
-        var window = SettingsWindowBridge.anchorWindow
-        if window == nil {
-            SettingsWindowBridge.open()
-            for _ in 0..<20 {
-                try? await Task.sleep(for: .milliseconds(50))
-                if let found = SettingsWindowBridge.anchorWindow {
-                    window = found
-                    break
-                }
-            }
-        }
-
         let response = await withCheckedContinuation { (continuation: CheckedContinuation<NSApplication.ModalResponse, Never>) in
-            if let window {
+            if let window = SettingsWindowBridge.visibleAnchorWindow {
                 alert.beginSheetModal(for: window) { continuation.resume(returning: $0) }
             } else {
                 continuation.resume(returning: alert.runModal())
@@ -294,17 +344,24 @@ final class ReminderScheduler {
 }
 
 private final class SpeechSynthesisDelegate: NSObject, AVSpeechSynthesizerDelegate {
-    private let onComplete: () -> Void
+    private let onComplete: (String, AVSpeechSynthesizer) -> Void
+    private let onCancel: (String, AVSpeechSynthesizer) -> Void
 
-    init(onComplete: @escaping () -> Void) {
+    init(
+        onComplete: @escaping (String, AVSpeechSynthesizer) -> Void,
+        onCancel: @escaping (String, AVSpeechSynthesizer) -> Void
+    ) {
         self.onComplete = onComplete
+        self.onCancel = onCancel
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        Task { @MainActor in onComplete() }
+        let text = utterance.speechString
+        Task { @MainActor in onComplete(text, synthesizer) }
     }
 
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        Task { @MainActor in onComplete() }
+        let text = utterance.speechString
+        Task { @MainActor in onCancel(text, synthesizer) }
     }
 }
