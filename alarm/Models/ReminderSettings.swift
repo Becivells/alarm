@@ -12,6 +12,8 @@ struct ReminderSettings: Codable, Equatable {
     var alertSpeech: Bool = true
     var alertFlash: Bool = true
     var speechText: String = "该休息了"
+    var overlayThemePreset: OverlayThemePreset = .system
+    var customOverlayPalette: OverlayColorPalette?
 
     static let presetOptions: [(label: String, seconds: TimeInterval)] = [
         ("5 分钟", 5 * 60),

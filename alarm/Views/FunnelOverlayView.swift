@@ -21,22 +21,39 @@ extension ReminderCountdown {
 struct CircularProgressRing: View {
     let progress: Double
     let isFiring: Bool
+    let palette: OverlayColorPalette
     let lineWidth: CGFloat = 5
 
     var body: some View {
         ZStack {
             Circle()
-                .stroke(Color.primary.opacity(0.12), lineWidth: lineWidth)
+                .stroke(trackColor, lineWidth: lineWidth)
 
             Circle()
                 .trim(from: 0, to: progress)
                 .stroke(
-                    isFiring ? Color.orange : Color.accentColor,
+                    progressColor,
                     style: StrokeStyle(lineWidth: lineWidth, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
         }
         .aspectRatio(1, contentMode: .fit)
+    }
+
+    private var trackColor: Color {
+        if palette.usesSystemAppearance {
+            return Color.primary.opacity(0.12)
+        }
+        return palette.trackRing.swiftUIColor
+    }
+
+    private var progressColor: Color {
+        if palette.usesSystemAppearance {
+            return isFiring ? .orange : .accentColor
+        }
+        return isFiring
+            ? palette.progressRingFiring.swiftUIColor
+            : palette.progressRing.swiftUIColor
     }
 }
 
@@ -45,19 +62,50 @@ struct CountdownTimeLabel: View, Equatable {
     let isFiring: Bool
     let intervalMinutes: Int
     let pulseScale: CGFloat
+    let palette: OverlayColorPalette
+
+    static func == (lhs: CountdownTimeLabel, rhs: CountdownTimeLabel) -> Bool {
+        lhs.display == rhs.display
+            && lhs.isFiring == rhs.isFiring
+            && lhs.intervalMinutes == rhs.intervalMinutes
+            && lhs.pulseScale == rhs.pulseScale
+            && lhs.palette == rhs.palette
+    }
 
     var body: some View {
         VStack(spacing: 2) {
             Text(display)
                 .font(.system(size: 20, weight: .bold, design: .rounded))
                 .monospacedDigit()
-                .foregroundStyle(isFiring ? .orange : .primary)
+                .foregroundStyle(countdownColor)
+                .shadow(
+                    color: palette.countdownShadow ? .black.opacity(0.45) : .clear,
+                    radius: 1,
+                    x: 0,
+                    y: 0.5
+                )
 
             Text("\(intervalMinutes) 分钟")
                 .font(.caption2)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(subtitleColor)
         }
         .scaleEffect(pulseScale)
+    }
+
+    private var countdownColor: Color {
+        if palette.usesSystemAppearance {
+            return isFiring ? .orange : .primary
+        }
+        return isFiring
+            ? palette.countdownFiring.swiftUIColor
+            : palette.countdown.swiftUIColor
+    }
+
+    private var subtitleColor: Color {
+        if palette.usesSystemAppearance {
+            return .secondary
+        }
+        return palette.subtitle.swiftUIColor
     }
 }
 
@@ -65,6 +113,7 @@ struct FunnelOverlayView: View {
     @Bindable var scheduler: ReminderScheduler
 
     private var isFiring: Bool { scheduler.phase == .firing }
+    private var palette: OverlayColorPalette { scheduler.settings.resolvedOverlayPalette }
 
     var body: some View {
         VStack(spacing: 10) {
@@ -95,7 +144,7 @@ struct FunnelOverlayView: View {
     private var countdownRing: some View {
         if scheduler.isPaused || !scheduler.settings.enabled {
             ZStack {
-                CircularProgressRing(progress: 0, isFiring: isFiring)
+                CircularProgressRing(progress: 0, isFiring: isFiring, palette: palette)
                 staticStatusLabel
             }
         } else {
@@ -114,7 +163,8 @@ struct FunnelOverlayView: View {
                             display: display,
                             isFiring: isFiring,
                             intervalMinutes: scheduler.settings.intervalMinutes,
-                            pulseScale: reminderPulseScale(at: now)
+                            pulseScale: reminderPulseScale(at: now),
+                            palette: palette
                         )
                     )
                 }
@@ -138,7 +188,7 @@ struct FunnelOverlayView: View {
                     intervalSeconds: scheduler.settings.intervalSeconds
                 )
             )
-            CircularProgressRing(progress: progress, isFiring: isFiring)
+            CircularProgressRing(progress: progress, isFiring: isFiring, palette: palette)
         }
     }
 
@@ -149,22 +199,47 @@ struct FunnelOverlayView: View {
 
     @ViewBuilder
     private var staticStatusLabel: some View {
+        let color = palette.usesSystemAppearance
+            ? Color.secondary
+            : palette.statusLabel.swiftUIColor
+
         if scheduler.isPaused {
             Text("已暂停")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(color)
         } else {
             Text("未启用")
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(color)
         }
     }
 
+    private var controlLabelColor: Color {
+        if palette.usesSystemAppearance {
+            return isFiring ? .orange : .secondary
+        }
+        return isFiring
+            ? palette.controlLabelFiring.swiftUIColor
+            : palette.controlLabel.swiftUIColor
+    }
+
+    private var controlAccentColor: Color {
+        if palette.usesSystemAppearance {
+            return isFiring ? .orange : .accentColor
+        }
+        return isFiring
+            ? palette.controlLabelFiring.swiftUIColor
+            : palette.controlLabel.swiftUIColor
+    }
+
     private func overlayButton(_ title: String, action: @escaping () -> Void) -> some View {
-        Button(title, action: action)
-            .buttonStyle(.borderless)
-            .font(.caption2)
-            .controlSize(.mini)
+        Button(action: action) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(controlLabelColor)
+        }
+        .buttonStyle(.plain)
+        .tint(controlAccentColor)
     }
 }
 
